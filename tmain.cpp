@@ -216,7 +216,7 @@ void send_relay(){
        		printf("\n paket len2 = %d", header->caplen);
        		printf("\n paket len3 = %d", sizeof(EthArpPacket));
 			
-			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(packet),(int)header->len);
+			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet),(int)header->len);
 			printf(" \nsend data = "); 
 			for(int k=0;k < header->len; k++)
 			{
