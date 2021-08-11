@@ -1,4 +1,4 @@
-LDLIBS=-lpcap
+LDLIBS=-lpcap -lpthread
 
 all: send-arp-test
 
